@@ -147,7 +147,8 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
         try Task.checkCancellation()
 
         let script = """
-        (async () => {
+        void (async () => {
+          window.__codexTranscriptResult = '__PENDING__';
           const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
           const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
           const textOf = (node) => (node && typeof node.innerText === 'string') ? node.innerText.trim() : '';
@@ -211,7 +212,8 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
 
           const pageText = normalize(document.body?.innerText || '');
           if (blockedKeywords.some((keyword) => pageText.includes(keyword))) {
-            return '__SITE_BLOCKED__';
+            window.__codexTranscriptResult = '__SITE_BLOCKED__';
+            return;
           }
 
           document.getElementById('info-container')?.click();
@@ -219,27 +221,31 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
 
           const transcriptButton = await waitFor(findTranscriptButton, 15000);
           if (!transcriptButton) {
-            return '__TRANSCRIPT_BUTTON_NOT_FOUND__';
+            window.__codexTranscriptResult = '__TRANSCRIPT_BUTTON_NOT_FOUND__';
+            return;
           }
 
           transcriptButton.click();
           await sleep(1500);
 
           const transcriptText = await waitFor(() => {
-            const node = document.getElementsByTagName('ytd-transcript-segment-list-renderer')[0];
+            const node = document.getElementsByTagName('yt-item-section-renderer')[0];
             const text = textOf(node);
             return text ? text : '';
           }, 20000);
 
           if (!transcriptText) {
-            return '__TRANSCRIPT_NOT_FOUND__';
+            window.__codexTranscriptResult = '__TRANSCRIPT_NOT_FOUND__';
+            return;
           }
 
-          return transcriptText;
+          window.__codexTranscriptResult = transcriptText;
         })();
         """
 
-        let result = try await evaluateJavaScript(script)
+        try await injectJavaScript(script)
+
+        let result = try await waitForTranscriptResult(timeoutMs: 25_000)
         let transcript = result.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if transcript.isEmpty {
@@ -278,6 +284,28 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
                 continuation.resume(returning: value)
             }
         }
+    }
+
+    private func injectJavaScript(_ script: String) async throws {
+        _ = try await evaluateJavaScript(script)
+    }
+
+    private func waitForTranscriptResult(timeoutMs: Int) async throws -> String {
+        let startedAt = Date()
+
+        while Date().timeIntervalSince(startedAt) * 1000 < Double(timeoutMs) {
+            try Task.checkCancellation()
+
+            let result = try await evaluateJavaScript("window.__codexTranscriptResult || ''")
+            let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && trimmed != "__PENDING__" {
+                return trimmed
+            }
+
+            try await Task.sleep(nanoseconds: 300_000_000)
+        }
+
+        throw TranscriptError.transcriptNotFound
     }
 
     private func makeBlock(for link: String, transcript: String) -> String {
