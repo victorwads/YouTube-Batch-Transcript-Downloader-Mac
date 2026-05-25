@@ -20,14 +20,11 @@ struct ContentView: View {
                     }
 
                     panel(title: "Links extraídos") {
-                        extractedLinksList
+                        extractedItemsList
                     }
 
-                    panel(title: "Transcrição concatenada") {
-                        TextEditor(text: $model.outputText)
-                            .font(.system(.body, design: .monospaced))
-                            .padding(8)
-                            .background(Color(nsColor: .textBackgroundColor))
+                    panel(title: "Transcrições") {
+                        transcriptResultsList
                     }
                 }
                 .frame(minHeight: 330)
@@ -47,10 +44,10 @@ struct ContentView: View {
         }
     }
 
-    private var extractedLinksList: some View {
+    private var extractedItemsList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
-                if model.extractedLinks.isEmpty {
+                if model.extractedItems.isEmpty {
                     Text("Nenhum link detectado ainda.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -58,17 +55,56 @@ struct ContentView: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                 } else {
-                    ForEach(Array(model.extractedLinks.enumerated()), id: \.offset) { index, link in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text("\(index + 1).")
-                                .foregroundStyle(.secondary)
-                                .frame(width: 36, alignment: .trailing)
+                    ForEach(Array(model.extractedItems.enumerated()), id: \.offset) { index, item in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(index + 1). \(item.title)")
+                                .font(.headline)
+                                .textSelection(.enabled)
 
-                            Text(link)
+                            Text(item.url.absoluteString)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        .padding(.horizontal, 12)
+                    }
+                }
+            }
+            .padding(.vertical, 10)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private var transcriptResultsList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                if model.transcriptResults.isEmpty {
+                    Text("Nenhuma transcrição gerada ainda.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                } else {
+                    ForEach(Array(model.transcriptResults.enumerated()), id: \.offset) { index, item in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("\(index + 1). \(item.title)")
+                                .font(.headline)
+                                .textSelection(.enabled)
+
+                            Text(item.url.absoluteString)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+
+                            Text(item.transcript)
                                 .font(.system(.body, design: .monospaced))
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .padding(12)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .padding(.horizontal, 12)
                     }
                 }
@@ -95,8 +131,13 @@ struct ContentView: View {
                     .frame(width: 220)
             }
 
-            Button("Limpar saída") {
-                model.outputText = ""
+            Button("Exportar TXT") {
+                model.exportTranscriptionToTXT()
+            }
+            .disabled(model.transcriptResults.isEmpty)
+
+            Button("Limpar resultados") {
+                model.clearOutput()
             }
             .disabled(model.isProcessing)
 

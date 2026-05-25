@@ -1,10 +1,12 @@
 import Foundation
+import UniformTypeIdentifiers
 import WebKit
 
 @MainActor
 final class TranscriptBatchViewModel: NSObject, ObservableObject {
     @Published var linksText = ""
-    @Published var extractedLinks: [String] = []
+    @Published var extractedItems: [TranscriptInputItem] = []
+    @Published var transcriptResults: [TranscriptResultItem] = []
     @Published var outputText = ""
     @Published var statusText = "Pronto."
     @Published var isProcessing = false
@@ -12,6 +14,7 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
 
     let webView: WKWebView
 
+    private let transcriptCache = TranscriptCacheStore()
     private var processingTask: Task<Void, Never>?
     private var navigationContinuation: CheckedContinuation<Void, Error>?
 
@@ -26,31 +29,66 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
     }
 
     func refreshExtractedLinksPreview() {
-        let links = LinkExtractor.extractLinks(from: linksText)
-        extractedLinks = links.map(\.absoluteString)
+        extractedItems = LinkExtractor.extractEntries(from: linksText)
     }
 
     func startProcessing() {
         guard !isProcessing else { return }
-        let links = LinkExtractor.extractLinks(from: linksText)
-        extractedLinks = links.map(\.absoluteString)
-        guard !links.isEmpty else {
+        let items = LinkExtractor.extractEntries(from: linksText)
+        extractedItems = items
+        guard !items.isEmpty else {
             statusText = "Cole pelo menos um link válido."
             return
         }
 
-        outputText = outputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !outputText.isEmpty {
-            outputText += "\n\n"
-        }
-
         isProcessing = true
         progress = 0
-        statusText = "Iniciando processamento de \(links.count) links..."
+        statusText = "Iniciando processamento de \(items.count) links..."
 
         processingTask = Task { [weak self] in
             guard let self else { return }
-            await self.process(links: links)
+            await self.process(items: items)
+        }
+    }
+
+    func clearOutput() {
+        outputText = ""
+        transcriptResults = []
+    }
+
+    func exportText() -> String {
+        transcriptResults.map { result in
+            makeBlock(
+                title: result.title,
+                link: result.url.absoluteString,
+                transcript: result.transcript
+            )
+        }
+        .joined(separator: "\n\n")
+    }
+
+    func exportTranscriptionToTXT() {
+        let text = exportText()
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            statusText = "Não há transcrição para exportar."
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = "transcricoes.txt"
+        panel.canCreateDirectories = true
+
+        let response = panel.runModal()
+        guard response == .OK, let url = panel.url else {
+            return
+        }
+
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            statusText = "Transcrição exportada para \(url.lastPathComponent)."
+        } catch {
+            statusText = "Falha ao exportar: \(error.localizedDescription)"
         }
     }
 
@@ -62,7 +100,7 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
         statusText = "Processamento interrompido."
     }
 
-    private func process(links: [URL]) async {
+    private func process(items: [TranscriptInputItem]) async {
         let wasCancelled = Task.isCancelled
         defer {
             Task { @MainActor in
@@ -77,59 +115,55 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
             }
         }
 
-        for (index, url) in links.enumerated() {
+        for (index, item) in items.enumerated() {
             if Task.isCancelled { return }
 
             await MainActor.run {
-                self.statusText = "Abrindo \(index + 1)/\(links.count): \(url.absoluteString)"
+                self.statusText = "Abrindo \(index + 1)/\(items.count): \(item.title)"
             }
 
             do {
-                guard isSupportedYouTubeURL(url) else {
-                    let block = makeBlock(for: url.absoluteString, transcript: "ERRO: Não é o YouTube.")
+                guard isSupportedYouTubeURL(item.url) else {
                     await MainActor.run {
-                        if !self.outputText.isEmpty, !self.outputText.hasSuffix("\n\n") {
-                            self.outputText += "\n\n"
-                        }
-                        self.outputText += block
-                        self.outputText += "\n\n"
-                        self.progress = Double(index + 1) / Double(links.count)
+                        self.appendResult(TranscriptResultItem(title: item.title, url: item.url, transcript: "ERRO: Não é o YouTube."))
+                        self.progress = Double(index + 1) / Double(items.count)
+                        self.statusText = "Ignorado: \(item.title)"
+                    }
+                    continue
+                }
+
+                if let cachedTranscript = transcriptCache.transcript(for: item.url) {
+                    let result = TranscriptResultItem(title: item.title, url: item.url, transcript: cachedTranscript)
+                    await MainActor.run {
+                        self.appendResult(result)
+                        self.progress = Double(index + 1) / Double(items.count)
+                        self.statusText = "Cache: \(item.title)"
                     }
                     continue
                 }
 
                 do {
-                    try await load(url: url)
+                    try await load(url: item.url)
                 } catch {
-                    let block = makeBlock(for: url.absoluteString, transcript: "ERRO: Carregamento falhou. \(error.localizedDescription)")
+                    let transcript = "ERRO: Carregamento falhou. \(error.localizedDescription)"
                     await MainActor.run {
-                        if !self.outputText.isEmpty, !self.outputText.hasSuffix("\n\n") {
-                            self.outputText += "\n\n"
-                        }
-                        self.outputText += block
-                        self.outputText += "\n\n"
-                        self.progress = Double(index + 1) / Double(links.count)
+                        self.appendResult(TranscriptResultItem(title: item.title, url: item.url, transcript: transcript))
+                        self.progress = Double(index + 1) / Double(items.count)
                     }
                     continue
                 }
 
                 let transcript = try await extractTranscript()
-                let block = makeBlock(for: url.absoluteString, transcript: transcript)
-
+                transcriptCache.save(transcript: transcript, for: item.url)
                 await MainActor.run {
-                    if !self.outputText.isEmpty, !self.outputText.hasSuffix("\n\n") {
-                        self.outputText += "\n\n"
-                    }
-                    self.outputText += block
-                    self.outputText += "\n\n"
-                    self.progress = Double(index + 1) / Double(links.count)
+                    self.appendResult(TranscriptResultItem(title: item.title, url: item.url, transcript: transcript))
+                    self.progress = Double(index + 1) / Double(items.count)
                 }
             } catch {
-                let block = makeBlock(for: url.absoluteString, transcript: "ERRO: \(error.localizedDescription)")
+                let transcript = "ERRO: \(error.localizedDescription)"
                 await MainActor.run {
-                    self.outputText += block
-                    self.outputText += "\n\n"
-                    self.progress = Double(index + 1) / Double(links.count)
+                    self.appendResult(TranscriptResultItem(title: item.title, url: item.url, transcript: transcript))
+                    self.progress = Double(index + 1) / Double(items.count)
                 }
             }
         }
@@ -308,8 +342,16 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
         throw TranscriptError.transcriptNotFound
     }
 
-    private func makeBlock(for link: String, transcript: String) -> String {
+    private func appendResult(_ result: TranscriptResultItem) {
+        transcriptResults.append(result)
+        outputText = exportText()
+    }
+
+    private func makeBlock(title: String, link: String, transcript: String) -> String {
         """
+        TÍTULO:
+        \(title)
+
         LINK:
         \(link)
 

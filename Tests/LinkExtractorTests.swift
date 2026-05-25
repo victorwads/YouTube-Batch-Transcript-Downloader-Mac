@@ -2,7 +2,7 @@ import XCTest
 @testable import LinksMae
 
 final class LinkExtractorTests: XCTestCase {
-    func testExtractLinksFromMixedText() {
+    func testExtractEntriesFromMixedTextPreservesTitles() {
         let input = """
 Conteúdos do curso de Técnico em Análise do Comportamento Aplicada da
 ABA Liberta
@@ -33,11 +33,16 @@ Módulo 2 - Transtorno no Espectro Autista
 12. Outros transtornos e condições associadas - https://setec.ufmt.br/ava/extensao-ufmt/mod/hvp/view.php?id=3915
 """
 
-        let links = LinkExtractor.extractLinks(from: input)
+        let entries = LinkExtractor.extractEntries(from: input)
 
-        XCTAssertEqual(links.count, 21)
-        XCTAssertEqual(links.first?.absoluteString, "https://www.youtube.com/watch?v=mCC0_8eMUKw")
-        XCTAssertEqual(links[8].absoluteString, "https://www.youtube.com/watch?v=wHtmcFnrS7A")
-        XCTAssertEqual(links.last?.absoluteString, "https://setec.ufmt.br/ava/extensao-ufmt/mod/hvp/view.php?id=3915")
+        XCTAssertEqual(entries.count, 21)
+        XCTAssertEqual(entries.first?.title, "Introdução")
+        XCTAssertEqual(entries.first?.url.absoluteString, "https://www.youtube.com/watch?v=mCC0_8eMUKw")
+        XCTAssertEqual(entries[1].title, "O que é ABA?")
+        XCTAssertEqual(entries[8].title, "O que NÃO é ABA")
+        XCTAssertEqual(entries[9].title, "Introdução")
+        XCTAssertEqual(entries[9].url.absoluteString, "https://www.youtube.com/watch?v=v5Y0wR7PaUo")
+        XCTAssertEqual(entries.last?.title, "Outros transtornos e condições associadas")
+        XCTAssertEqual(entries.last?.url.absoluteString, "https://setec.ufmt.br/ava/extensao-ufmt/mod/hvp/view.php?id=3915")
     }
 }
