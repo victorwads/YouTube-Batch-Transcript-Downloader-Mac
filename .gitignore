@@ -1,0 +1,19 @@
+.DS_Store
+
+# Xcode / XcodeGen generated
+LinksMae.xcodeproj/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/contents.xcworkspacedata
+*.xcworkspace/
+*.xcuserstate
+
+# Build artifacts
+DerivedData/
+build/
+*.xcarchive
+*.app
+*.dSYM
+*.swiftpm/
+.build/
+

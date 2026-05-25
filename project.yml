@@ -1,0 +1,38 @@
+name: LinksMae
+options:
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: com.victorwads.LinksMae
+    SWIFT_VERSION: 6.0
+targets:
+  LinksMae:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        INFOPLIST_KEY_NSMainStoryboardFile: ""
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_NAME: LinksMae
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: LinksMae
+        CFBundleName: LinksMae
+        CFBundlePackageType: APPL
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHighResolutionCapable: true
+  LinksMaeTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: LinksMae
