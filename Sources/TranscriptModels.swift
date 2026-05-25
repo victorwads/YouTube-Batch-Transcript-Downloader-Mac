@@ -8,6 +8,7 @@ struct TranscriptInputItem: Identifiable, Equatable {
 
 struct TranscriptResultItem: Identifiable, Equatable {
     let id = UUID()
+    let order: Int
     let title: String
     let url: URL
     let transcript: String

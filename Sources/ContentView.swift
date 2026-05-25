@@ -4,6 +4,11 @@ import WebKit
 struct ContentView: View {
     @ObservedObject var model: TranscriptBatchViewModel
 
+    private let webViewColumns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12)
+    ]
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -29,19 +34,31 @@ struct ContentView: View {
                 }
                 .frame(minHeight: 330)
 
-                panel(title: "WebView ao vivo") {
-                    LiveWebView(webView: model.webView)
-                        .frame(minHeight: 320)
+                panel(title: "6 WebViews ao vivo") {
+                    webViewGrid
+                        .frame(minHeight: 520)
                 }
             }
         }
-        .frame(minWidth: 1200, minHeight: 800)
+        .frame(minWidth: 1400, minHeight: 900)
         .onAppear {
             model.refreshExtractedLinksPreview()
         }
         .onChange(of: model.linksText) { _, _ in
             model.refreshExtractedLinksPreview()
         }
+    }
+
+    private var webViewGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: webViewColumns, alignment: .leading, spacing: 12) {
+                ForEach(Array(model.webViewSlots.enumerated()), id: \.offset) { _, slot in
+                    WebViewSlotCard(slot: slot)
+                }
+            }
+            .padding(12)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
     }
 
     private var extractedItemsList: some View {
@@ -166,6 +183,44 @@ struct ContentView: View {
             content()
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct WebViewSlotCard: View {
+    @ObservedObject var slot: TranscriptWebViewSlot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(slot.slotName)
+                        .font(.headline)
+                    Text(slot.statusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+
+            Text(slot.title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .textSelection(.enabled)
+
+            Text(slot.currentURLString)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .textSelection(.enabled)
+
+            LiveWebView(webView: slot.webView)
+                .frame(height: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
