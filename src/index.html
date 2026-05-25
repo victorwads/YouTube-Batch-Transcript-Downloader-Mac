@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' https: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-src https: http:; object-src 'none';" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YouTube Transcript Batch Mac</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>YouTube Transcript Batch Mac</h1>
+          <p id="status-text">Ready.</p>
+        </div>
+        <div class="actions">
+          <progress id="progress-bar" max="1" value="0"></progress>
+          <button id="export-button" type="button">Export TXT</button>
+          <button id="clear-button" type="button">Clear results</button>
+          <button id="stop-button" type="button" disabled>Stop</button>
+          <button id="process-button" type="button">Process</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel input-panel">
+          <div class="panel-header">Input text</div>
+          <textarea id="links-input" spellcheck="false" placeholder="Paste text with titles and YouTube links here..."></textarea>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">Extracted links</div>
+          <div id="extracted-list" class="scroll-panel"></div>
+        </section>
+
+        <section class="panel transcripts-panel">
+          <div class="panel-header">Transcripts</div>
+          <div id="results-list" class="scroll-panel"></div>
+          <textarea id="output-text" readonly spellcheck="false" placeholder="Final concatenated output will appear here..."></textarea>
+        </section>
+      </main>
+
+      <section class="panel webviews-panel">
+        <div class="panel-header">6 live WebViews</div>
+        <div id="webviews-grid" class="webviews-grid"></div>
+      </section>
+    </div>
+
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

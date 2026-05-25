@@ -11,9 +11,14 @@ LinksMae.xcodeproj/
 # Build artifacts
 DerivedData/
 build/
+dist/
+node_modules/
 *.xcarchive
 *.app
 *.dSYM
 *.swiftpm/
 .build/
 
+# Electron / Node
+.electron/
+.cache/

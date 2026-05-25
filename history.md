@@ -24,6 +24,6 @@ Another lesson was that speed matters.
 
 Even with automation, processing almost 200 links one at a time would still feel slow. So the app evolved from a single WebView approach into a parallel batch process with multiple WebViews running at the same time. That change made the workflow much faster while keeping the output stable and ordered.
 
-By the time the app was working, what had started as a practical request had become something more meaningful: a tool that turns a long, repetitive task into a reusable workflow, and a record of how we solve problems together.
+By the time the app was working, what had started as a practical request had become something more meaningful: a desktop app built with Electron and TypeScript that turns a long, repetitive task into a reusable workflow, and a record of how we solve problems together.
 
 This project is not just about extracting transcripts. It is also about collaboration, distance, learning, and the shared habit my mother and I have of turning a problem into something useful.
