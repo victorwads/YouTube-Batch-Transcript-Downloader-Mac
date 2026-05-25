@@ -4,7 +4,7 @@ import WebKit
 @MainActor
 final class TranscriptBatchViewModel: NSObject, ObservableObject {
     @Published var linksText = ""
-    @Published var extractedLinksText = ""
+    @Published var extractedLinks: [String] = []
     @Published var outputText = ""
     @Published var statusText = "Pronto."
     @Published var isProcessing = false
@@ -27,13 +27,13 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
 
     func refreshExtractedLinksPreview() {
         let links = LinkExtractor.extractLinks(from: linksText)
-        extractedLinksText = links.map(\.absoluteString).joined(separator: "\n")
+        extractedLinks = links.map(\.absoluteString)
     }
 
     func startProcessing() {
         guard !isProcessing else { return }
         let links = LinkExtractor.extractLinks(from: linksText)
-        extractedLinksText = links.map(\.absoluteString).joined(separator: "\n")
+        extractedLinks = links.map(\.absoluteString)
         guard !links.isEmpty else {
             statusText = "Cole pelo menos um link válido."
             return
@@ -85,7 +85,34 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
             }
 
             do {
-                try await load(url: url)
+                guard isSupportedYouTubeURL(url) else {
+                    let block = makeBlock(for: url.absoluteString, transcript: "ERRO: Não é o YouTube.")
+                    await MainActor.run {
+                        if !self.outputText.isEmpty, !self.outputText.hasSuffix("\n\n") {
+                            self.outputText += "\n\n"
+                        }
+                        self.outputText += block
+                        self.outputText += "\n\n"
+                        self.progress = Double(index + 1) / Double(links.count)
+                    }
+                    continue
+                }
+
+                do {
+                    try await load(url: url)
+                } catch {
+                    let block = makeBlock(for: url.absoluteString, transcript: "ERRO: Carregamento falhou. \(error.localizedDescription)")
+                    await MainActor.run {
+                        if !self.outputText.isEmpty, !self.outputText.hasSuffix("\n\n") {
+                            self.outputText += "\n\n"
+                        }
+                        self.outputText += block
+                        self.outputText += "\n\n"
+                        self.progress = Double(index + 1) / Double(links.count)
+                    }
+                    continue
+                }
+
                 let transcript = try await extractTranscript()
                 let block = makeBlock(for: url.absoluteString, transcript: transcript)
 
@@ -122,28 +149,113 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
         let script = """
         (async () => {
           const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-          document.getElementById('info-container')?.click();
-          document.querySelector('[aria-label="Mostrar transcrição"]')?.click();
+          const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+          const textOf = (node) => (node && typeof node.innerText === 'string') ? node.innerText.trim() : '';
+          const transcriptLabels = [
+            'show transcript',
+            'open transcript',
+            'transcript',
+            'mostrar transcrição',
+            'mostrar transcricao',
+            'exibir transcrição',
+            'exibir transcricao',
+            'abrir transcrição',
+            'abrir transcricao'
+          ];
 
-          for (let i = 0; i < 24; i += 1) {
-            const transcriptNode = document.getElementsByTagName('ytd-transcript-segment-list-renderer')[0];
-            const transcript = transcriptNode?.outerText?.trim();
-            if (transcript) {
-              return transcript;
+          const waitFor = async (predicate, timeoutMs, intervalMs = 250) => {
+            const startedAt = Date.now();
+            while (Date.now() - startedAt < timeoutMs) {
+              const value = predicate();
+              if (value) {
+                return value;
+              }
+              await sleep(intervalMs);
             }
+            return null;
+          };
 
-            await sleep(250);
+          const findTranscriptButton = () => {
+            const buttons = Array.from(document.querySelectorAll([
+              'button',
+              'tp-yt-paper-button',
+              'ytd-button-renderer button',
+              'ytd-menu-service-item-renderer button',
+              'ytd-menu-navigation-item-renderer button'
+            ].join(',')));
+
+            return buttons.find((button) => {
+              const signature = [
+                button.textContent,
+                button.getAttribute('aria-label'),
+                button.title
+              ].map(normalize).join(' ');
+
+              return transcriptLabels.some((label) => signature.includes(label));
+            }) || null;
+          };
+
+          await waitFor(() => document.readyState === 'complete' ? 'ready' : '', 15000);
+          await waitFor(() => document.getElementById('info-container') ? 'info' : '', 15000);
+
+          const blockedKeywords = [
+            'video unavailable',
+            'this video is unavailable',
+            'restricted',
+            'blocked',
+            'conteúdo indisponível',
+            'conteudo indisponivel',
+            'vídeo indisponível',
+            'video indisponivel'
+          ];
+
+          const pageText = normalize(document.body?.innerText || '');
+          if (blockedKeywords.some((keyword) => pageText.includes(keyword))) {
+            return '__SITE_BLOCKED__';
           }
 
-          return '__TRANSCRIPT_NOT_FOUND__';
+          document.getElementById('info-container')?.click();
+          await sleep(1200);
+
+          const transcriptButton = await waitFor(findTranscriptButton, 15000);
+          if (!transcriptButton) {
+            return '__TRANSCRIPT_BUTTON_NOT_FOUND__';
+          }
+
+          transcriptButton.click();
+          await sleep(1500);
+
+          const transcriptText = await waitFor(() => {
+            const node = document.getElementsByTagName('ytd-transcript-segment-list-renderer')[0];
+            const text = textOf(node);
+            return text ? text : '';
+          }, 20000);
+
+          if (!transcriptText) {
+            return '__TRANSCRIPT_NOT_FOUND__';
+          }
+
+          return transcriptText;
         })();
         """
 
         let result = try await evaluateJavaScript(script)
         let transcript = result.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if transcript.isEmpty || transcript == "__TRANSCRIPT_NOT_FOUND__" {
-            throw TranscriptError.notFound
+        if transcript.isEmpty {
+            throw TranscriptError.transcriptNotFound
+        }
+
+        if transcript == "__SITE_BLOCKED__" {
+            throw TranscriptError.siteBlocked
+        }
+
+        if transcript == "__TRANSCRIPT_BUTTON_NOT_FOUND__" {
+            throw TranscriptError.transcriptButtonNotFound
+        }
+
+        if transcript == "__TRANSCRIPT_NOT_FOUND__" {
+            throw TranscriptError.transcriptNotFound
         }
 
         return transcript
@@ -177,6 +289,11 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
         \(transcript)
         """
     }
+
+    private func isSupportedYouTubeURL(_ url: URL) -> Bool {
+        let host = (url.host ?? "").lowercased()
+        return host.contains("youtube.com") || host.contains("youtu.be")
+    }
 }
 
 extension TranscriptBatchViewModel: WKNavigationDelegate {
@@ -197,11 +314,17 @@ extension TranscriptBatchViewModel: WKNavigationDelegate {
 }
 
 private enum TranscriptError: LocalizedError {
-    case notFound
+    case siteBlocked
+    case transcriptButtonNotFound
+    case transcriptNotFound
 
     var errorDescription: String? {
         switch self {
-        case .notFound:
+        case .siteBlocked:
+            return "Site bloqueado."
+        case .transcriptButtonNotFound:
+            return "Botão de transcrição não encontrado."
+        case .transcriptNotFound:
             return "Não foi possível localizar a transcrição nesta página."
         }
     }

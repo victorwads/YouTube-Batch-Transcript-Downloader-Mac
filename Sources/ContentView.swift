@@ -20,11 +20,7 @@ struct ContentView: View {
                     }
 
                     panel(title: "Links extraídos") {
-                        TextEditor(text: $model.extractedLinksText)
-                            .font(.system(.body, design: .monospaced))
-                            .padding(8)
-                            .background(Color(nsColor: .textBackgroundColor))
-                            .disabled(true)
+                        extractedLinksList
                     }
 
                     panel(title: "Transcrição concatenada") {
@@ -49,6 +45,37 @@ struct ContentView: View {
         .onChange(of: model.linksText) { _, _ in
             model.refreshExtractedLinksPreview()
         }
+    }
+
+    private var extractedLinksList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 8) {
+                if model.extractedLinks.isEmpty {
+                    Text("Nenhum link detectado ainda.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                } else {
+                    ForEach(Array(model.extractedLinks.enumerated()), id: \.offset) { index, link in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text("\(index + 1).")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 36, alignment: .trailing)
+
+                            Text(link)
+                                .font(.system(.body, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.horizontal, 12)
+                    }
+                }
+            }
+            .padding(.vertical, 10)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
     }
 
     private var header: some View {
