@@ -114,7 +114,7 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
 
-                            Text(item.transcript)
+                            Text(transcriptPreview(for: item.transcript))
                                 .font(.system(.body, design: .monospaced))
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -225,11 +225,37 @@ private struct WebViewSlotCard: View {
 }
 
 private struct LiveWebView: NSViewRepresentable {
-    let webView: WKWebView
+    let webView: WKWebView?
 
-    func makeNSView(context: Context) -> WKWebView {
-        webView
+    func makeNSView(context: Context) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        return container
     }
 
-    func updateNSView(_ nsView: WKWebView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {
+        nsView.subviews.forEach { subview in
+            if subview !== webView {
+                subview.removeFromSuperview()
+            }
+        }
+
+        guard let webView else { return }
+        guard webView.superview !== nsView else {
+            webView.frame = nsView.bounds
+            return
+        }
+
+        webView.removeFromSuperview()
+        webView.frame = nsView.bounds
+        webView.autoresizingMask = [.width, .height]
+        nsView.addSubview(webView)
+    }
+}
+
+private func transcriptPreview(for transcript: String, limit: Int = 2_500) -> String {
+    guard transcript.count > limit else { return transcript }
+    let endIndex = transcript.index(transcript.startIndex, offsetBy: limit)
+    return String(transcript[..<endIndex]) + "\n\n[prévia truncada para manter a interface leve]"
 }

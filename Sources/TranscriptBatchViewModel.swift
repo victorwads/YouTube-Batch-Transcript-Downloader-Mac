@@ -8,7 +8,6 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
     @Published var linksText = ""
     @Published var extractedItems: [TranscriptInputItem] = []
     @Published var transcriptResults: [TranscriptResultItem] = []
-    @Published var outputText = ""
     @Published var statusText = "Pronto."
     @Published var isProcessing = false
     @Published var progress: Double = 0
@@ -51,7 +50,6 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
     }
 
     func clearOutput() {
-        outputText = ""
         transcriptResults = []
     }
 
@@ -69,24 +67,42 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
     }
 
     func exportTranscriptionToTXT() {
-        let text = exportText()
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let resultsToExport = transcriptResults
+            .sorted(by: { $0.order < $1.order })
+
+        guard !resultsToExport.isEmpty else {
             statusText = "Não há transcrição para exportar."
             return
         }
 
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "transcricoes.txt"
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
         panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Exportar"
+        panel.message = "Escolha a pasta onde os arquivos de transcrição serão salvos."
 
-        guard panel.runModal() == .OK, let url = panel.url else {
+        guard panel.runModal() == .OK, let directoryURL = panel.url else {
             return
         }
 
         do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            statusText = "Transcrição exportada para \(url.lastPathComponent)."
+            var usedNames = Set<String>()
+
+            for result in resultsToExport {
+                let fileName = makeUniqueFileName(for: result, usedNames: &usedNames)
+                let fileURL = directoryURL.appendingPathComponent(fileName)
+                let text = makeBlock(
+                    title: result.title,
+                    link: result.url.absoluteString,
+                    transcript: result.transcript
+                )
+
+                try text.write(to: fileURL, atomically: true, encoding: .utf8)
+            }
+
+            statusText = "\(resultsToExport.count) transcrições exportadas para \(directoryURL.lastPathComponent)."
         } catch {
             statusText = "Falha ao exportar: \(error.localizedDescription)"
         }
@@ -104,10 +120,11 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
 
     private func process(items: [TranscriptInputItem]) async {
         let baseOrder = transcriptResults.count
-        let wasCancelled = Task.isCancelled
 
         defer {
+            let wasCancelled = Task.isCancelled
             Task { @MainActor in
+                self.finalizeAllWebViews()
                 self.isProcessing = false
                 self.processingTask = nil
                 if wasCancelled {
@@ -154,6 +171,9 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
         let slot = await slotPool.acquire()
         defer {
             Task {
+                await MainActor.run {
+                    slot.finishProcessingCycle()
+                }
                 await self.slotPool.release(slot)
             }
         }
@@ -231,7 +251,12 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
     private func appendResult(_ result: TranscriptResultItem) {
         transcriptResults.append(result)
         transcriptResults.sort(by: { $0.order < $1.order })
-        outputText = exportText()
+    }
+
+    private func finalizeAllWebViews() {
+        for slot in webViewSlots {
+            slot.finishProcessingCycle()
+        }
     }
 
     private func makeBlock(title: String, link: String, transcript: String) -> String {
@@ -245,6 +270,35 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
         TRANSCRIÇÃO:
         \(transcript)
         """
+    }
+
+    private func makeUniqueFileName(for result: TranscriptResultItem, usedNames: inout Set<String>) -> String {
+        let orderPrefix = String(format: "%03d", result.order + 1)
+        let baseName = sanitizeFileName(result.title).isEmpty ? "transcricao" : sanitizeFileName(result.title)
+        var candidate = "\(orderPrefix) - \(baseName).txt"
+        var duplicateIndex = 2
+
+        while usedNames.contains(candidate) {
+            candidate = "\(orderPrefix) - \(baseName) (\(duplicateIndex)).txt"
+            duplicateIndex += 1
+        }
+
+        usedNames.insert(candidate)
+        return candidate
+    }
+
+    private func sanitizeFileName(_ value: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/\\\\?%*|\"<>:")
+            .union(.newlines)
+            .union(.controlCharacters)
+
+        let cleaned = value
+            .components(separatedBy: invalidCharacters)
+            .joined(separator: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return String(cleaned.prefix(80))
     }
 
     private func isSupportedYouTubeURL(_ url: URL) -> Bool {

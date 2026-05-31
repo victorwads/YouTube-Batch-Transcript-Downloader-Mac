@@ -8,21 +8,15 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
     @Published var currentURLString = ""
     @Published var statusText = "Livre"
 
-    let webView: WKWebView
+    @Published private(set) var webView: WKWebView?
 
     private var navigationContinuation: CheckedContinuation<Void, Error>?
 
     init(index: Int) {
         self.slotName = "WebView \(index)"
         self.title = slotName
-
-        let configuration = WKWebViewConfiguration()
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        configuration.websiteDataStore = .default()
-
-        self.webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
-        self.webView.navigationDelegate = self
+        self.webView = makeWebView()
     }
 
     func prepare(for item: TranscriptInputItem, cached: Bool = false) {
@@ -46,12 +40,15 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
     }
 
     func stop() {
-        webView.stopLoading()
+        navigationContinuation?.resume(throwing: CancellationError())
+        navigationContinuation = nil
+        webView?.stopLoading()
         statusText = "Interrompido"
     }
 
     func load(url: URL) async throws {
         try Task.checkCancellation()
+        let webView = ensureWebView()
         try await withCheckedThrowingContinuation { continuation in
             navigationContinuation = continuation
             webView.load(URLRequest(url: url))
@@ -182,7 +179,8 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
     }
 
     private func evaluateJavaScript(_ script: String) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
+        let webView = ensureWebView()
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
             webView.evaluateJavaScript(script) { [weak self] result, error in
                 guard self != nil else {
                     continuation.resume(throwing: CancellationError())
@@ -220,6 +218,37 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
         }
 
         throw TranscriptError.transcriptNotFound
+    }
+
+    func finishProcessingCycle() {
+        navigationContinuation?.resume(throwing: CancellationError())
+        navigationContinuation = nil
+        webView?.stopLoading()
+        webView?.navigationDelegate = nil
+        webView?.loadHTMLString("", baseURL: nil)
+        webView?.removeFromSuperview()
+        webView = nil
+        reset()
+    }
+
+    private func ensureWebView() -> WKWebView {
+        if let webView {
+            return webView
+        }
+
+        let newWebView = makeWebView()
+        webView = newWebView
+        return newWebView
+    }
+
+    private func makeWebView() -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.websiteDataStore = .default()
+
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = self
+        return webView
     }
 }
 

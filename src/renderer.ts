@@ -118,6 +118,7 @@ type TranscriptRunState = {
   results: TranscriptResultItem[];
   items: TranscriptInputItem[];
   progress: number;
+  retryItems: TranscriptInputItem[];
 };
 
 type SlotResolver = (slot: WebviewSlot | null) => void;
@@ -162,6 +163,7 @@ const state: TranscriptRunState = {
   results: [],
   items: [],
   progress: 0,
+  retryItems: [],
 };
 
 let slotPool: WebviewSlotPool;
@@ -346,6 +348,7 @@ async function startProcessing(): Promise<void> {
   state.items = items;
   state.results = [];
   state.progress = 0;
+  state.retryItems = [];
   state.canceled = false;
   state.active = true;
 
@@ -361,8 +364,15 @@ async function startProcessing(): Promise<void> {
   }
 
   try {
-    const tasks = items.map((item) => processItem(item));
-    await Promise.all(tasks);
+    await processBatch(items);
+    if (!state.canceled && state.retryItems.length > 0) {
+      updateHeader(`Retrying ${state.retryItems.length} failed links...`);
+      const retryTargets = dedupeRetryTargets(state.retryItems, state.results);
+      state.retryItems = [];
+      if (retryTargets.length > 0) {
+        await processBatch(retryTargets);
+      }
+    }
   } finally {
     state.active = false;
     updateButtons();
@@ -450,17 +460,46 @@ async function processItem(item: TranscriptInputItem): Promise<void> {
       ...item,
       transcript,
     });
+    state.retryItems = upsertRetryItem(state.retryItems, item);
     slot.statusEl.textContent = 'Error';
   } finally {
     slotPool.release(slot);
   }
 }
 
+async function processBatch(items: TranscriptInputItem[]): Promise<void> {
+  const tasks = items.map((item) => processItem(item));
+  await Promise.all(tasks);
+}
+
 function appendResult(result: TranscriptResultItem): void {
-  state.results = [...state.results, result].sort((a, b) => a.order - b.order);
+  state.results = upsertResult(state.results, result);
   state.progress = state.items.length === 0 ? 0 : state.results.length / state.items.length;
   renderResults();
   updateHeader(`Processed ${state.results.length}/${state.items.length}`);
+}
+
+function upsertResult(results: TranscriptResultItem[], nextResult: TranscriptResultItem): TranscriptResultItem[] {
+  const withoutSameOrder = results.filter((result) => result.order !== nextResult.order);
+  return [...withoutSameOrder, nextResult].sort((a, b) => a.order - b.order);
+}
+
+function upsertRetryItem(items: TranscriptInputItem[], nextItem: TranscriptInputItem): TranscriptInputItem[] {
+  const withoutSameOrder = items.filter((item) => item.order !== nextItem.order);
+  return [...withoutSameOrder, nextItem].sort((a, b) => a.order - b.order);
+}
+
+function dedupeRetryTargets(
+  retryItems: TranscriptInputItem[],
+  results: TranscriptResultItem[],
+): TranscriptInputItem[] {
+  const successfulOrders = new Set(
+    results
+      .filter((result) => !result.transcript.startsWith('ERRO:'))
+      .map((result) => result.order),
+  );
+
+  return retryItems.filter((item) => !successfulOrders.has(item.order));
 }
 
 function loadSlot(slot: WebviewSlot, url: string): Promise<void> {
