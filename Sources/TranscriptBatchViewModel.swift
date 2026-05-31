@@ -53,6 +53,15 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
         transcriptResults = []
     }
 
+    func clearCache() {
+        guard !isProcessing else { return }
+
+        let removedCount = transcriptCache.clearAll()
+        statusText = removedCount == 0
+            ? "Cache já estava vazio."
+            : "Cache limpo. \(removedCount) transcrições removidas."
+    }
+
     func exportText() -> String {
         transcriptResults
             .sorted(by: { $0.order < $1.order })

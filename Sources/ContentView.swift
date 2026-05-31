@@ -158,6 +158,11 @@ struct ContentView: View {
             }
             .disabled(model.isProcessing)
 
+            Button("Limpar cache") {
+                model.clearCache()
+            }
+            .disabled(model.isProcessing)
+
             Button(model.isProcessing ? "Parar" : "Processar") {
                 if model.isProcessing {
                     model.cancelProcessing()

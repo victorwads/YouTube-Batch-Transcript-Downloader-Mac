@@ -64,6 +64,46 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
           const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
           const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
           const textOf = (node) => (node && typeof node.innerText === 'string') ? node.innerText.trim() : '';
+          const normalizeTimestamp = (raw) => {
+            const cleaned = (raw || '').trim();
+            if (!cleaned) return '';
+
+            const parts = cleaned
+              .split(':')
+              .map((part) => part.replace(/\\D/g, ''))
+              .filter((part) => part.length > 0);
+
+            if (parts.length < 2 || parts.length > 3) return '';
+
+            const numbers = parts.map((part) => Number.parseInt(part, 10));
+            if (numbers.some((value) => Number.isNaN(value))) return '';
+
+            const [hours, minutes, seconds] = parts.length === 3
+              ? numbers
+              : [0, numbers[0], numbers[1]];
+
+            return [
+              String(hours).padStart(3, '0'),
+              String(minutes).padStart(2, '0'),
+              String(seconds).padStart(2, '0')
+            ].join(':');
+          };
+          const extractStructuredTranscript = () => {
+            const segments = Array.from(document.querySelectorAll('transcript-segment-view-model'));
+            if (!segments.length) return '';
+
+            const lines = segments.map((segment) => {
+              const timestampNode = segment.querySelector('div[class*="Timestamp"]:not([class*="A11yLabel"])');
+              const textNode = segment.querySelector('span');
+              const timestamp = normalizeTimestamp(textOf(timestampNode));
+              const text = textOf(textNode);
+
+              if (!timestamp || !text) return '';
+              return `${timestamp} ${text}`;
+            }).filter(Boolean);
+
+            return lines.join('\\n').trim();
+          };
           const transcriptLabels = [
             'show transcript',
             'open transcript',
@@ -140,11 +180,24 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
           transcriptButton.click();
           await sleep(1500);
 
+          const structuredTranscript = await waitFor(() => {
+            const structured = extractStructuredTranscript();
+            if (structured) {
+              return structured;
+            }
+            return '';
+          }, 20000);
+
+          if (structuredTranscript) {
+            window.__codexTranscriptResult = structuredTranscript;
+            return;
+          }
+
           const transcriptText = await waitFor(() => {
             const node = document.getElementsByTagName('yt-item-section-renderer')[0];
             const text = textOf(node);
             return text ? text : '';
-          }, 20000);
+          }, 5000);
 
           if (!transcriptText) {
             window.__codexTranscriptResult = '__TRANSCRIPT_NOT_FOUND__';
