@@ -15,7 +15,12 @@ final class TranscriptCacheStore {
             return nil
         }
 
-        if transcript.hasPrefix("ERRO:") || isStructuredTranscript(transcript) {
+        if transcript.hasPrefix("ERRO:") {
+            removeTranscript(forKey: key)
+            return nil
+        }
+
+        if isStructuredTranscript(transcript) {
             return transcript
         }
 
@@ -24,6 +29,10 @@ final class TranscriptCacheStore {
     }
 
     func save(transcript: String, for url: URL) {
+        guard !transcript.hasPrefix("ERRO:") else {
+            return
+        }
+
         let key = cacheKey(for: url)
         var transcripts = allTranscripts
         transcripts[key] = transcript

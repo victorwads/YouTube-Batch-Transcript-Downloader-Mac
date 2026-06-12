@@ -11,18 +11,37 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
     @Published var statusText = "Pronto."
     @Published var isProcessing = false
     @Published var progress: Double = 0
+    @Published var webViewUserAgent = ""
+    @Published var isCapturingWebViewUserAgent = false
+    @Published var isClearingWebViewStorage = false
+    @Published var loginURLText = "https://www.youtube.com"
+    @Published var activeWebViewCount = 6
 
     let webViewSlots: [TranscriptWebViewSlot]
+    let loginWebViewSlot: TranscriptWebViewSlot
+    lazy var webViewWindowControllers: [TranscriptWebViewWindowController] = {
+        webViewSlots.map { TranscriptWebViewWindowController(slot: $0) }
+    }()
 
     private let transcriptCache = TranscriptCacheStore()
     private let slotPool: WebViewSlotPool
     private var processingTask: Task<Void, Never>?
+    private var loginWindowController: LoginWebViewWindowController?
+    private var didPresentWebViewWindows = false
+    private let webViewUserAgentStorageKey = "LinksMae.webViewUserAgent"
+    private let activeWebViewCountStorageKey = "LinksMae.activeWebViewCount"
 
     override init() {
         let slots = (1...6).map { TranscriptWebViewSlot(index: $0) }
         self.webViewSlots = slots
+        self.loginWebViewSlot = TranscriptWebViewSlot(index: 0, slotName: "Login")
         self.slotPool = WebViewSlotPool(slots: slots)
         super.init()
+        webViewUserAgent = UserDefaults.standard.string(forKey: webViewUserAgentStorageKey) ?? ""
+        let storedActiveCount = UserDefaults.standard.integer(forKey: activeWebViewCountStorageKey)
+        activeWebViewCount = storedActiveCount == 0 ? 6 : storedActiveCount
+        activeWebViewCount = min(max(activeWebViewCount, 1), webViewSlots.count)
+        applyWebViewUserAgent()
     }
 
     func refreshExtractedLinksPreview() {
@@ -41,7 +60,7 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
 
         isProcessing = true
         progress = 0
-        statusText = "Iniciando processamento de \(items.count) links..."
+        statusText = "Iniciando processamento de \(items.count) links com \(activeWebViewCount) WebViews simultâneas..."
 
         processingTask = Task { [weak self] in
             guard let self else { return }
@@ -60,6 +79,108 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
         statusText = removedCount == 0
             ? "Cache já estava vazio."
             : "Cache limpo. \(removedCount) transcrições removidas."
+    }
+
+    func clearWebViewStorageAndResetSlots() async {
+        guard !isProcessing, !isClearingWebViewStorage else { return }
+        isClearingWebViewStorage = true
+        statusText = "Limpando storage da WebView..."
+
+        defer {
+            isClearingWebViewStorage = false
+        }
+
+        for slot in webViewSlots {
+            slot.stop()
+        }
+
+        await removeAllWebViewData()
+
+        for slot in webViewSlots {
+            slot.resetWebView()
+            slot.updateUserAgent(webViewUserAgent)
+        }
+
+        loginWebViewSlot.resetWebView()
+        loginWebViewSlot.updateUserAgent(webViewUserAgent)
+
+        statusText = "Storage da WebView limpo. Faça login novamente."
+    }
+
+    func openLoginPage() {
+        guard !isProcessing else {
+            statusText = "Pare o processamento para abrir a tela de login."
+            return
+        }
+
+        guard let url = normalizedURL(from: loginURLText) else {
+            statusText = "URL de login inválida."
+            return
+        }
+
+        presentLoginWindowIfNeeded()
+        loginWebViewSlot.openManualPage(url: url, title: "Login manual")
+        statusText = "Login aberto em janela separada."
+    }
+
+    func cancelLogin() {
+        loginWebViewSlot.stop()
+        loginWindowController?.window?.close()
+        loginWindowController = nil
+        statusText = "Login cancelado."
+    }
+
+    func showAllWebViewWindows() {
+        if didPresentWebViewWindows {
+            bringActiveWebViewWindowsToFront()
+            return
+        }
+
+        didPresentWebViewWindows = true
+        bringActiveWebViewWindowsToFront()
+        statusText = "WebViews abertas em janelas separadas."
+    }
+
+    func setActiveWebViewCount(_ value: Int) {
+        let clamped = min(max(value, 1), webViewSlots.count)
+        activeWebViewCount = clamped
+        UserDefaults.standard.set(clamped, forKey: activeWebViewCountStorageKey)
+        statusText = "Concorrência ajustada para \(clamped) WebViews."
+        if didPresentWebViewWindows {
+            bringActiveWebViewWindowsToFront()
+        }
+    }
+
+    func updateWebViewUserAgent(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        webViewUserAgent = trimmed
+
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: webViewUserAgentStorageKey)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: webViewUserAgentStorageKey)
+        }
+
+        applyWebViewUserAgent()
+    }
+
+    func captureWebViewUserAgentFromDefaultBrowser() async {
+        guard !isCapturingWebViewUserAgent else { return }
+        isCapturingWebViewUserAgent = true
+        statusText = "Capturando User-Agent do navegador..."
+
+        defer {
+            isCapturingWebViewUserAgent = false
+        }
+
+        do {
+            let service = BrowserUserAgentCaptureService()
+            let capturedUserAgent = try await service.captureUserAgent()
+            updateWebViewUserAgent(capturedUserAgent)
+            statusText = "User-Agent capturado do navegador."
+        } catch {
+            statusText = "Falha ao capturar User-Agent: \(error.localizedDescription)"
+        }
     }
 
     func exportText() -> String {
@@ -129,6 +250,7 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
 
     private func process(items: [TranscriptInputItem]) async {
         let baseOrder = transcriptResults.count
+        let concurrency = max(1, min(activeWebViewCount, webViewSlots.count))
 
         defer {
             let wasCancelled = Task.isCancelled
@@ -157,7 +279,7 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
                 }
 
                 launched += 1
-                if launched >= self.webViewSlots.count {
+                if launched >= concurrency {
                     _ = await group.next()
                     launched -= 1
                 }
@@ -241,7 +363,7 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
                 self.statusText = "Concluído: \(item.title)"
             }
         } catch {
-            let transcript = "ERRO: \(error.localizedDescription)"
+            let transcript = "ERRO: \(describeProcessingError(error))"
             await MainActor.run {
                 slot.markError(transcript)
                 self.appendResult(
@@ -262,10 +384,52 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
         transcriptResults.sort(by: { $0.order < $1.order })
     }
 
+    private func describeProcessingError(_ error: Error) -> String {
+        if error is CancellationError {
+            return "Operacao cancelada enquanto a WebView ainda estava processando. Isso normalmente acontece quando o slot e resetado, a janela e fechada, o processamento e interrompido ou a WebView e recriada no meio da leitura."
+        }
+
+        if let transcriptError = error as? TranscriptError,
+           let description = transcriptError.errorDescription {
+            return description
+        }
+
+        return error.localizedDescription
+    }
+
     private func finalizeAllWebViews() {
         for slot in webViewSlots {
             slot.finishProcessingCycle()
         }
+    }
+
+    private func removeAllWebViewData() async {
+        await withCheckedContinuation { continuation in
+            WKWebsiteDataStore.default().removeData(
+                ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                modifiedSince: .distantPast
+            ) {
+                continuation.resume()
+            }
+        }
+    }
+
+    private func applyWebViewUserAgent() {
+        for slot in webViewSlots {
+            slot.updateUserAgent(webViewUserAgent)
+        }
+        loginWebViewSlot.updateUserAgent(webViewUserAgent)
+    }
+
+    private func bringActiveWebViewWindowsToFront() {
+        let count = max(1, min(activeWebViewCount, webViewWindowControllers.count))
+
+        for controller in webViewWindowControllers.prefix(count) {
+            controller.showWindow(nil)
+            controller.window?.makeKeyAndOrderFront(nil)
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func makeBlock(title: String, link: String, transcript: String) -> String {
@@ -314,6 +478,54 @@ final class TranscriptBatchViewModel: NSObject, ObservableObject {
         let host = (url.host ?? "").lowercased()
         return host.contains("youtube.com") || host.contains("youtu.be")
     }
+
+    private func normalizedURL(from text: String) -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let url = URL(string: trimmed), url.scheme != nil {
+            return url
+        }
+
+        return URL(string: "https://\(trimmed)")
+    }
+
+    private func presentLoginWindowIfNeeded() {
+        if let controller = loginWindowController {
+            controller.showWindow(nil)
+            controller.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let controller = LoginWebViewWindowController(
+            slot: loginWebViewSlot,
+            onWindowClosed: { [weak self] in
+                Task { @MainActor in
+                    self?.handleLoginWindowClosed()
+                }
+            },
+            closeAction: { [weak self] in
+                Task { @MainActor in
+                    self?.cancelLogin()
+                }
+            }
+        )
+
+        loginWindowController = controller
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func handleLoginWindowClosed() {
+        loginWindowController = nil
+        loginWebViewSlot.stop()
+        if !isProcessing {
+            statusText = "Login cancelado."
+        }
+    }
+
 }
 
 private actor WebViewSlotPool {

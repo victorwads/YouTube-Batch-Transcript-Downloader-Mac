@@ -11,10 +11,12 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
     @Published private(set) var webView: WKWebView?
 
     private var navigationContinuation: CheckedContinuation<Void, Error>?
+    private var customUserAgent: String?
+    private var videoMuteGuardTask: Task<Void, Never>?
 
-    init(index: Int) {
-        self.slotName = "WebView \(index)"
-        self.title = slotName
+    init(index: Int, slotName: String? = nil) {
+        self.slotName = slotName ?? "WebView \(index)"
+        self.title = self.slotName
         super.init()
         self.webView = makeWebView()
     }
@@ -40,10 +42,110 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
     }
 
     func stop() {
+        videoMuteGuardTask?.cancel()
+        videoMuteGuardTask = nil
         navigationContinuation?.resume(throwing: CancellationError())
         navigationContinuation = nil
         webView?.stopLoading()
         statusText = "Interrompido"
+    }
+
+    func resetWebView() {
+        videoMuteGuardTask?.cancel()
+        videoMuteGuardTask = nil
+        navigationContinuation?.resume(throwing: CancellationError())
+        navigationContinuation = nil
+        webView?.stopLoading()
+        webView?.navigationDelegate = nil
+        webView?.removeFromSuperview()
+        webView = makeWebView()
+        reset()
+    }
+
+    func openManualPage(url: URL, title: String) {
+        videoMuteGuardTask?.cancel()
+        videoMuteGuardTask = nil
+        navigationContinuation?.resume(throwing: CancellationError())
+        navigationContinuation = nil
+
+        let webView = ensureWebView()
+        webView.stopLoading()
+
+        self.title = title
+        currentURLString = url.absoluteString
+        statusText = "Abrindo login..."
+        webView.load(URLRequest(url: url))
+    }
+
+    func silencePlayback() async {
+        guard webView != nil else { return }
+
+        let script = """
+        (() => {
+          const applyToMedia = () => {
+            const videos = Array.from(document.querySelectorAll('video'));
+            for (const video of videos) {
+              try {
+                video.muted = true;
+                video.volume = 0;
+                video.pause();
+              } catch (_) {}
+            }
+
+            const iframes = Array.from(document.querySelectorAll('iframe'));
+            for (const frame of iframes) {
+              try {
+                frame.contentWindow?.postMessage({ event: 'command', func: 'mute', args: [] }, '*');
+                frame.contentWindow?.postMessage({ event: 'command', func: 'pauseVideo', args: [] }, '*');
+              } catch (_) {}
+            }
+
+            return {
+              mutedVideos: videos.filter((video) => video.muted).length,
+              totalVideos: videos.length,
+            };
+          };
+
+          const result = applyToMedia();
+
+          if (!window.__codexMediaSilenceObserverInstalled) {
+            window.__codexMediaSilenceObserverInstalled = true;
+            const observer = new MutationObserver(() => applyToMedia());
+            observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+            window.setTimeout(() => observer.disconnect(), 15000);
+          }
+
+          return JSON.stringify(result);
+        })();
+        """
+
+        _ = try? await evaluateJavaScript(script)
+    }
+
+    func startVideoMuteGuard() {
+        guard videoMuteGuardTask == nil else { return }
+
+        videoMuteGuardTask = Task { [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch {
+                    break
+                }
+
+                if Task.isCancelled { break }
+
+                await self.silencePlayback()
+            }
+        }
+    }
+
+    func updateUserAgent(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        customUserAgent = trimmed.isEmpty ? nil : trimmed
+        webView?.customUserAgent = customUserAgent
     }
 
     func load(url: URL) async throws {
@@ -89,12 +191,22 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
             ].join(':');
           };
           const extractStructuredTranscript = () => {
-            const segments = Array.from(document.querySelectorAll('transcript-segment-view-model'));
+            const segments = Array.from(document.querySelectorAll([
+              'transcript-segment-view-model',
+              'ytd-transcript-segment-renderer'
+            ].join(',')));
             if (!segments.length) return '';
 
             const lines = segments.map((segment) => {
-              const timestampNode = segment.querySelector('div[class*="Timestamp"]:not([class*="A11yLabel"])');
-              const textNode = segment.querySelector('span');
+              const timestampNode = segment.querySelector([
+                'div[class*="Timestamp"]:not([class*="A11yLabel"])',
+                '.segment-timestamp'
+              ].join(','));
+              const textNode = segment.querySelector([
+                'span',
+                '.segment-text',
+                'yt-formatted-string.segment-text'
+              ].join(','));
               const timestamp = normalizeTimestamp(textOf(timestampNode));
               const text = textOf(textNode);
 
@@ -128,6 +240,47 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
             return null;
           };
 
+          const waitForTranscriptContent = async (timeoutMs, intervalMs = 250) => {
+            const startedAt = Date.now();
+            let lastStructuredTranscript = '';
+            let stableHits = 0;
+            let lastOpenAttemptAt = 0;
+
+            const tryOpenTranscriptPanel = () => {
+              document.getElementById('info-container')?.click();
+
+              const transcriptButton = findTranscriptButton();
+              if (transcriptButton) {
+                transcriptButton.click();
+                return true;
+              }
+
+              return false;
+            };
+
+            while (Date.now() - startedAt < timeoutMs) {
+              const structuredTranscript = extractStructuredTranscript();
+              if (structuredTranscript) {
+                if (structuredTranscript === lastStructuredTranscript) {
+                  stableHits += 1;
+                  if (stableHits >= 2) {
+                    return structuredTranscript;
+                  }
+                } else {
+                  lastStructuredTranscript = structuredTranscript;
+                  stableHits = 0;
+                }
+              } else if (Date.now() - lastOpenAttemptAt >= 5000) {
+                tryOpenTranscriptPanel();
+                lastOpenAttemptAt = Date.now();
+              }
+
+              await sleep(intervalMs);
+            }
+
+            return null;
+          };
+
           const findTranscriptButton = () => {
             const buttons = Array.from(document.querySelectorAll([
               'button',
@@ -148,8 +301,17 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
             }) || null;
           };
 
-          await waitFor(() => document.readyState === 'complete' ? 'ready' : '', 15000);
-          await waitFor(() => document.getElementById('info-container') ? 'info' : '', 15000);
+          const pageReady = await waitFor(() => document.readyState === 'complete' ? 'ready' : '', 120000);
+          if (!pageReady) {
+            window.__codexTranscriptResult = '__DOCUMENT_READY_TIMEOUT__';
+            return;
+          }
+
+          const infoContainer = await waitFor(() => document.getElementById('info-container'), 120000);
+          if (!infoContainer) {
+            window.__codexTranscriptResult = '__INFO_CONTAINER_NOT_FOUND__';
+            return;
+          }
 
           const blockedKeywords = [
             'video unavailable',
@@ -168,25 +330,17 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
             return;
           }
 
-          document.getElementById('info-container')?.click();
-          await sleep(1200);
+          infoContainer.click();
 
-          const transcriptButton = await waitFor(findTranscriptButton, 15000);
+          const transcriptButton = await waitFor(findTranscriptButton, 120000);
           if (!transcriptButton) {
             window.__codexTranscriptResult = '__TRANSCRIPT_BUTTON_NOT_FOUND__';
             return;
           }
 
           transcriptButton.click();
-          await sleep(1500);
 
-          const structuredTranscript = await waitFor(() => {
-            const structured = extractStructuredTranscript();
-            if (structured) {
-              return structured;
-            }
-            return '';
-          }, 20000);
+          const structuredTranscript = await waitForTranscriptContent(120000);
 
           if (structuredTranscript) {
             window.__codexTranscriptResult = structuredTranscript;
@@ -197,10 +351,10 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
             const node = document.getElementsByTagName('yt-item-section-renderer')[0];
             const text = textOf(node);
             return text ? text : '';
-          }, 5000);
+          }, 120000);
 
           if (!transcriptText) {
-            window.__codexTranscriptResult = '__TRANSCRIPT_NOT_FOUND__';
+            window.__codexTranscriptResult = '__TRANSCRIPT_CONTENT_NOT_FOUND__';
             return;
           }
 
@@ -209,7 +363,7 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
         """
 
         try await injectJavaScript(script)
-        let result = try await waitForTranscriptResult(timeoutMs: 25_000)
+        let result = try await waitForTranscriptResult(timeoutMs: 120_000)
         let transcript = result.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if transcript.isEmpty {
@@ -220,8 +374,20 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
             throw TranscriptError.siteBlocked
         }
 
+        if transcript == "__DOCUMENT_READY_TIMEOUT__" {
+            throw TranscriptError.documentReadyTimeout
+        }
+
+        if transcript == "__INFO_CONTAINER_NOT_FOUND__" {
+            throw TranscriptError.infoContainerNotFound
+        }
+
         if transcript == "__TRANSCRIPT_BUTTON_NOT_FOUND__" {
             throw TranscriptError.transcriptButtonNotFound
+        }
+
+        if transcript == "__TRANSCRIPT_CONTENT_NOT_FOUND__" {
+            throw TranscriptError.transcriptContentNotFound
         }
 
         if transcript == "__TRANSCRIPT_NOT_FOUND__" {
@@ -274,6 +440,8 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
     }
 
     func finishProcessingCycle() {
+        videoMuteGuardTask?.cancel()
+        videoMuteGuardTask = nil
         navigationContinuation?.resume(throwing: CancellationError())
         navigationContinuation = nil
         webView?.stopLoading()
@@ -300,7 +468,11 @@ final class TranscriptWebViewSlot: NSObject, ObservableObject {
         configuration.websiteDataStore = .default()
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.customUserAgent = customUserAgent
         webView.navigationDelegate = self
+        if #available(macOS 13.3, *) {
+            webView.isInspectable = true
+        }
         return webView
     }
 }
@@ -310,6 +482,11 @@ extension TranscriptWebViewSlot: WKNavigationDelegate {
         navigationContinuation?.resume()
         navigationContinuation = nil
         statusText = "Página carregada"
+
+        Task { @MainActor in
+            await self.silencePlayback()
+            self.startVideoMuteGuard()
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
